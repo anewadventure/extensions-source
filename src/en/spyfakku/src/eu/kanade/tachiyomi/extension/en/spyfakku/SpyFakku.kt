@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.extension.en.spyfakku
 
+import android.annotation.SuppressLint
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -19,15 +20,50 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.*
 import kotlin.random.Random
+
+fun buildUnsafeOkHttp(): OkHttpClient {
+    // Create a trust manager that does not validate certificate chains
+    val trustAllCerts = arrayOf<TrustManager>(
+        @SuppressLint("CustomX509TrustManager")
+        object : X509TrustManager {
+            @SuppressLint("TrustAllX509TrustManager")
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+
+            @SuppressLint("TrustAllX509TrustManager")
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        },
+    )
+
+    // Install the all-trusting trust manager
+    val sslContext = SSLContext.getInstance("TLS")
+    sslContext.init(null, trustAllCerts, SecureRandom())
+    val sslSocketFactory = sslContext.socketFactory
+
+    val builder = OkHttpClient.Builder()
+        .sslSocketFactory(sslSocketFactory, trustAllCerts[0] as X509TrustManager)
+        .hostnameVerifier { _, _ -> true } // accept any hostname
+
+    // Add your rate limit or other configs
+    builder.callTimeout(60, TimeUnit.SECONDS)
+    builder.connectTimeout(20, TimeUnit.SECONDS)
+    builder.readTimeout(60, TimeUnit.SECONDS)
+
+    return builder.build()
+}
 
 class SpyFakku : HttpSource() {
 
@@ -45,7 +81,7 @@ class SpyFakku : HttpSource() {
 
     private val json: Json by injectLazy()
 
-    override val client = network.cloudflareClient.newBuilder()
+    override val client = buildUnsafeOkHttp().newBuilder()
         .rateLimit(2, 1, TimeUnit.SECONDS)
         .build()
 
