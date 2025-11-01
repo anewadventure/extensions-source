@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.extension.en.spyfakku
 
+import android.annotation.SuppressLint
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -23,17 +24,37 @@ import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
 import kotlin.random.Random
+@SuppressLint("CustomX509TrustManager")
+private class InsecureTrustManager : X509TrustManager {
+    @SuppressLint("TrustAllX509TrustManager")
+    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+        // Trust all client certificates
+    }
+
+    @SuppressLint("TrustAllX509TrustManager")
+    override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+        // Bypass server certificate validation - THIS IS THE SECURITY BYPASS
+    }
+
+    override fun getAcceptedIssuers(): Array<X509Certificate> {
+        return arrayOf()
+    }
+}
 
 class SpyFakku : HttpSource() {
 
     override val name = "SpyFakku"
 
-    override val baseUrl = "https://hentalk.pw"
+    override val baseUrl = "https://fakkuonion.airdns.org:4096"
 
     private val baseImageUrl = "$baseUrl/image"
 
@@ -45,7 +66,15 @@ class SpyFakku : HttpSource() {
 
     private val json: Json by injectLazy()
 
+    private val insecureTrustManager = InsecureTrustManager()
+
+    private val sslContext = SSLContext.getInstance("TLS").apply {
+        init(null, arrayOf(insecureTrustManager), SecureRandom())
+    }
+
     override val client = network.cloudflareClient.newBuilder()
+        .sslSocketFactory(sslContext.socketFactory, insecureTrustManager) // Apply the insecure SSL configuration
+        .hostnameVerifier { _, _ -> true } // Disable hostname verification (always returns true)
         .rateLimit(2, 1, TimeUnit.SECONDS)
         .build()
 
