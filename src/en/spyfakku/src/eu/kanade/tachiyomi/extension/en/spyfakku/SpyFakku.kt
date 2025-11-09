@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.extension.en.spyfakku
 
+import android.annotation.SuppressLint
 import android.widget.Toast
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -24,14 +25,20 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.injectLazy
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import kotlin.random.Random
 
 class SpyFakku : HttpSource(), ConfigurableSource {
@@ -59,13 +66,58 @@ class SpyFakku : HttpSource(), ConfigurableSource {
 
     override val client = network.cloudflareClient.newBuilder()
         .rateLimit(2, 1, TimeUnit.SECONDS)
+        .addInterceptor(AnubisInterceptor { baseUrl })
+        .apply {
+            val naiveTrustManager = @SuppressLint("CustomX509TrustManager")
+            object : X509TrustManager {
+                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+                override fun checkClientTrusted(certs: Array<X509Certificate>, authType: String) = Unit
+                override fun checkServerTrusted(certs: Array<X509Certificate>, authType: String) = Unit
+            }
+
+            val insecureSocketFactory = SSLContext.getInstance("SSL").apply {
+                val trustAllCerts = arrayOf<TrustManager>(naiveTrustManager)
+                init(null, trustAllCerts, SecureRandom())
+            }.socketFactory
+
+            sslSocketFactory(insecureSocketFactory, naiveTrustManager)
+            hostnameVerifier { _, _ -> true }
+        }
         .build()
 
     private val charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
     override fun headersBuilder() = super.headersBuilder()
+        .set("Accept", "application/json, text/plain, */*")
         .set("Referer", "$baseUrl/")
         .set("Origin", baseUrl)
+
+    private class AnubisInterceptor(private val baseUrlProvider: () -> String) : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val request = chain.request()
+            val response = chain.proceed(request)
+
+            val isApi = request.url.encodedPath.startsWith("/api/")
+            val contentType = response.header("content-type") ?: ""
+            val looksLikeHtml = contentType.contains("text/html")
+
+            if (isApi && looksLikeHtml) {
+                response.close()
+                val baseUrl = baseUrlProvider()
+                val preflight = Request.Builder()
+                    .url("$baseUrl/")
+                    .header("Referer", "$baseUrl/")
+                    .header("Origin", baseUrl)
+                    .build()
+                try {
+                    chain.proceed(preflight).close()
+                } catch (_: Exception) {
+                }
+                return chain.proceed(request)
+            }
+            return response
+        }
+    }
 
     override fun popularMangaRequest(page: Int): Request {
         return GET("$baseApiUrl/library?sort=released_at&page=$page", headers)
